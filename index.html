@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#3B428C">
+  <meta name="description" content="Meet the wildlife of the Huron River. A wildlife bingo card, field guide, and sighting journal for Ann Arbor Rowing Club.">
+  <title>Huron River Wildlife Bingo · AARC</title>
+  <link rel="icon" href="assets/brand/favicon.ico">
+  <link rel="stylesheet" href="styles.css">
+  <script defer src="animals.js"></script>
+  <script defer src="core.js"></script>
+  <script defer src="identification.js"></script>
+  <script defer src="facts.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to the game</a>
+  <header class="site-header shell">
+    <img class="club-logo" src="assets/brand/aarc-color.svg" width="128" height="128" alt="Ann Arbor Rowing Club">
+    <div class="header-copy"><p class="eyebrow">Argo Pond &amp; the Huron River</p><h1>Wildlife Bingo</h1></div>
+    <button id="help-button" class="quiet-button">How to play</button>
+  </header>
+  <nav class="main-nav shell" aria-label="Main"><button data-view="bingo" aria-current="page">Bingo</button><button data-view="animals">Animals</button><button data-view="identify">Identify</button><button data-view="surprise">Surprise me</button></nav>
+  <main id="main" class="shell" tabindex="-1">
+    <div id="storage-notice" class="notice" role="status" hidden><p id="storage-message"></p><button id="retry-storage" class="outline-button">Retry saving</button><button id="memory-mode" class="outline-button">Continue in this tab</button><button class="outline-button backup-trigger">Save backup</button></div>
+    <section id="view-bingo" aria-labelledby="bingo-title">
+      <div class="section-heading"><div><p class="eyebrow">Your river, your discoveries</p><h2 id="bingo-title" tabindex="-1">Your bingo card</h2><p id="card-description">25 squares. Five in a line makes bingo.</p></div><button id="new-card-button" class="outline-button">New card</button></div>
+      <div id="bingo-banner" class="bingo-banner" role="status" hidden></div>
+      <div class="play-layout">
+        <div class="card-area">
+          <div class="progress-panel"><p><strong id="spotted-count">0</strong><span> / 25 spotted</span></p><p id="bingo-count">0 bingos</p><progress id="sighting-progress" max="25" value="0" aria-label="Card sightings"></progress><p id="progress-message"></p><button id="next-bingo-button" class="quiet-button" aria-pressed="false">Show next line</button></div>
+          <p id="next-line-hint" class="notice" hidden></p>
+          <div class="board-legend" aria-label="Card key"><span>□ To spot</span><span>✓ Spotted</span><span>★ Bingo line</span></div>
+          <div class="board-frame"><div class="bingo-letters" aria-hidden="true"><span>B</span><span>I</span><span>N</span><span>G</span><span>O</span></div><div id="bingo-board" class="bingo-board" aria-label="Bingo card, five rows and five columns"></div></div>
+          <div class="card-bottom"><button id="big-pictures" class="text-button">Big pictures</button><span>Tap a square to look, then confirm.</span><button id="print-button" class="text-button">Print card</button></div>
+        </div>
+        <aside class="sidebar">
+          <section><div class="section-heading compact"><h3>Your sightings</h3><button id="journal-button" class="text-button">Open journal</button></div><p id="journal-summary"></p><ul id="recent-sightings" class="recent-list"></ul><p id="milestones" class="muted"></p></section>
+          <section class="river-note"><p class="eyebrow">A little river knowledge</p><h3 id="teaser-title">There’s more to every animal.</h3><p id="teaser-text">Discover the surprising lives behind your squares.</p><button data-go="surprise" class="text-button">Surprise me →</button></section>
+          <p class="muted safety-note">Keep your eyes on the river while rowing. Log sightings when safely stopped or back on shore. Give wildlife space.</p>
+        </aside>
+      </div>
+    </section>
+    <section id="view-animals" aria-labelledby="animals-title" hidden>
+      <div class="section-heading"><div><p class="eyebrow">A guide to river &amp; shore</p><h2 id="animals-title" tabindex="-1">Meet the animals</h2><p>41 entries. Different forms, one animal.</p></div></div>
+      <div class="catalog-controls"><label>Search animals<input id="guide-search" type="search" placeholder="Name or field mark…" autocomplete="off"></label><label>Group<select id="guide-group"><option>All</option><option>Birds</option><option>Mammals</option><option>Turtles</option><option>Amphibians</option><option>Fish</option></select></label><label class="check-label"><input id="card-filter" type="checkbox"> On this card</label></div>
+      <p id="guide-count" class="muted" role="status"></p><div id="guide-results" class="guide-results"></div><p id="guide-empty" hidden>No matching animals. Try another name or clear a filter.</p>
+      <p class="footnote">The catalog includes seasonal, shore, and wider watershed records. Inclusion does not promise a sighting at Argo. Generated illustrations are recognition aids; consult the linked references for identification.</p>
+    </section>
+    <section id="view-identify" aria-labelledby="identify-title" hidden>
+      <div class="section-heading"><div><p class="eyebrow">Start with what you saw</p><h2 id="identify-title" tabindex="-1">What was that?</h2><p>Follow the visible clues. Other local species are possible.</p></div></div>
+      <div id="id-path" class="muted"></div><div id="id-question" class="id-question"></div><div id="id-answers" class="id-answers"></div><div id="id-candidates" class="guide-results"></div>
+      <div class="actions"><button id="id-back" class="outline-button">Back</button><button id="id-unsure" class="outline-button">Not sure</button><button id="id-none" class="quiet-button">None of these</button><button id="id-restart" class="quiet-button">Start over</button></div><p id="id-note" class="notice" hidden></p>
+    </section>
+    <section id="view-surprise" aria-labelledby="surprise-title" hidden>
+      <div class="section-heading"><div><p class="eyebrow">Small discoveries, big stories</p><h2 id="surprise-title" tabindex="-1">Surprise me</h2><p>From every animal in the catalog. No sightings needed.</p></div><button id="next-fact" class="primary-button">Another discovery</button></div>
+      <article id="fact-card" class="fact-card"><div id="fact-image"></div><div class="fact-copy"><p id="fact-animal" class="eyebrow"></p><p id="fact-text" class="fact-text"></p><p id="fact-context" class="muted"></p><a id="fact-source" target="_blank" rel="noopener noreferrer">Read the source ↗</a><button id="fact-detail" class="outline-button">Meet this animal</button></div></article>
+    </section>
+    <div id="draft-bar" class="draft-bar" hidden><p id="draft-count" role="status"></p><button id="review-batch" class="primary-button">Review sightings</button><button id="discard-draft" class="quiet-button">Clear selections</button></div>
+  </main>
+  <footer class="site-footer shell"><p id="save-status">Saved on this device</p><div class="footer-actions"><button class="text-button backup-trigger">Save backup</button><label class="text-button file-label">Load backup<input id="backup-input" type="file" accept=".json,application/json"></label><button id="email-progress" class="text-button">Email progress</button><button id="share-progress" class="text-button" hidden>Share backup</button><button id="crew-button" class="text-button">Same-card crew</button></div><p class="footnote">Keep a backup file outside this browser. Clearing site data removes local progress. This game has no accounts or location tracking.</p></footer>
+
+  <dialog id="animal-dialog" class="animal-dialog" aria-labelledby="animal-name"><button class="close-button" data-close aria-label="Close animal detail">×</button><div class="dialog-heading"><p id="animal-status" class="eyebrow"></p><h2 id="animal-name"></h2><p id="animal-scientific" class="scientific-name"></p></div><div id="form-tabs" class="form-tabs" role="tablist" aria-label="Animal appearance"></div><div id="animal-art" class="animal-art" role="tabpanel" aria-label="Selected appearance"></div><div class="dialog-content"><p id="animal-cue" class="animal-cue"></p><p id="animal-look"></p><p id="animal-caution" class="notice" hidden></p><p id="animal-illustration" class="footnote"></p><form id="sighting-form"><label for="sighting-time">When did you see it?</label><input id="sighting-time" type="datetime-local" required><p class="input-hint">Your device’s local time. One sighting per animal per round.</p><p id="sighting-error" class="form-error" role="alert" hidden></p><div class="actions"><button id="save-sighting" class="primary-button" type="submit">I spotted it · Review</button><button id="remove-sighting" class="remove-button" type="button" hidden>Remove sighting</button><button id="cancel-sighting" class="quiet-button" type="button" data-close>Back</button></div></form><details class="evidence-details"><summary>References &amp; local evidence</summary><a id="animal-source" target="_blank" rel="noopener noreferrer">Identification reference ↗</a><div id="animal-evidence"></div></details></div></dialog>
+  <dialog id="review-dialog" class="small-dialog" aria-labelledby="review-title"><button class="close-button" data-close aria-label="Cancel review">×</button><p class="eyebrow">Check before saving</p><h2 id="review-title">Save these sightings?</h2><div id="review-list"></div><p id="review-error" class="form-error" role="alert" hidden></p><div class="actions"><button id="confirm-save" class="primary-button">Save sightings</button><button class="quiet-button" data-close>Cancel</button></div></dialog>
+  <dialog id="reset-dialog" class="small-dialog" aria-labelledby="reset-title"><button class="close-button" data-close aria-label="Cancel new card">×</button><p class="eyebrow">A fresh round</p><h2 id="reset-title">Start a daylight card?</h2><p>Draw 25 animals from the 32 daylight entries. Your journal stays. The new card starts at 0/25.</p><p id="reset-draft-note" class="notice" hidden>Unsaved selections will be discarded.</p><div class="actions"><button id="confirm-reset" class="primary-button">Start new card</button><button class="quiet-button" data-close>Keep my card</button></div></dialog>
+  <dialog id="restore-dialog" class="small-dialog" aria-labelledby="restore-title"><button class="close-button" data-close aria-label="Cancel restore">×</button><p class="eyebrow">Check your backup</p><h2 id="restore-title">Replace this progress?</h2><div id="restore-preview"></div><p>This replaces the current card and journal. Changes made after that backup will be lost. Unsaved selections will be discarded.</p><div class="actions"><button class="outline-button backup-trigger">Download current backup</button><button id="confirm-restore" class="primary-button">Restore backup</button><button class="quiet-button" data-close>Cancel</button></div><p id="restore-error" class="form-error" role="alert" hidden></p></dialog>
+  <dialog id="journal-dialog" class="journal-dialog" aria-labelledby="journal-title"><button class="close-button" data-close aria-label="Close journal">×</button><p class="eyebrow">Every saved discovery</p><h2 id="journal-title">Sighting journal</h2><p>Current and previous rounds. Open a record to correct its date or remove it.</p><ol id="journal-records" class="recent-list"></ol></dialog>
+  <dialog id="crew-dialog" class="small-dialog" aria-labelledby="crew-title"><button class="close-button" data-close aria-label="Close crew sharing">×</button><p class="eyebrow">Same squares, your own sightings</p><h2 id="crew-title">Same-card crew</h2><p>Send this card code to your crew. Only the card order is shared.</p><label for="crew-code">Card code</label><textarea id="crew-code" rows="4" spellcheck="false"></textarea><div class="actions"><button id="copy-code" class="outline-button">Copy code</button><button id="copy-card-link" class="outline-button">Copy game link</button><button id="preview-code" class="primary-button">Use this code…</button></div><p id="crew-error" class="form-error" role="alert" hidden></p></dialog>
+  <dialog id="crew-confirm-dialog" class="small-dialog" aria-labelledby="crew-confirm-title"><h2 id="crew-confirm-title">Start this crew card?</h2><p>Your journal stays. This card starts at 0/25. Unsaved selections will be discarded.</p><ol id="crew-preview"></ol><div class="actions"><button id="confirm-code" class="primary-button">Start crew card</button><button class="quiet-button" data-close>Cancel</button></div></dialog>
+  <dialog id="discard-dialog" class="small-dialog" aria-labelledby="discard-title"><h2 id="discard-title">Clear unsaved selections?</h2><p>Your saved sightings stay in the journal.</p><div class="actions"><button id="confirm-discard" class="primary-button">Clear selections</button><button class="quiet-button" data-close>Keep selections</button></div></dialog>
+  <dialog id="help-dialog" class="small-dialog" aria-labelledby="help-title"><button class="close-button" data-close aria-label="Close help">×</button><p class="eyebrow">A little attention goes a long way</p><h2 id="help-title">Look. Recognize. Record.</h2><ol class="help-steps"><li>Open a square or explore Animals and Identify. Use the large pictures and field marks.</li><li>Confirm what you saw, check its local time, then save. Catalog selections stay drafts until you review and save.</li><li>Five in a row, column, or either diagonal makes bingo. Open the journal to correct a mistake.</li><li>Save a backup file to keep progress outside this browser. Load it to recover your exact card and journal.</li></ol><p>Jumping Fish means a visible fish leaving the water. A splash alone cannot identify a fish or a bass. Catalog-only animals can still be saved; only animals on your actual card count toward bingo.</p><button class="primary-button" data-close>Let’s go spotting</button></dialog>
+  <div id="toast" class="toast" role="status" hidden></div><canvas id="fireworks" class="fireworks" aria-hidden="true" hidden></canvas><div id="celebration" class="celebration" aria-hidden="true" hidden><strong id="celebration-title">BINGO!</strong><span id="celebration-detail"></span></div>
+</body>
+</html>
