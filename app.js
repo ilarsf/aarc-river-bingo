@@ -2,25 +2,31 @@
   'use strict';
   const animals = window.RiverBingoAnimals;
   const core = window.RiverBingoCore;
-  const graph = window.RiverBingoIdentification;
   const facts = window.RiverBingoFacts;
   const byId = new Map(animals.map(animal => [animal.id, animal]));
   const ids = animals.map(animal => animal.id);
   const drawIds = animals.filter(animal => animal.bingoEligible).map(animal => animal.id);
+  const cardIds = animals.filter(animal => animal.bingoEligible || animal.previouslyBingoEligible).map(animal => animal.id);
+  const raptorGuides = [
+    ...animals.filter(animal => animal.silhouette),
+    {
+      id: 'coopers-hawk', name: 'Cooper’s Hawk',
+      silhouette: {
+        image: 'assets/guides/raptors/coopers-hawk.png',
+        wingspanCm: [62, 90], referenceSpanCm: 76,
+        outline: 'Short, rounded wings and a long, rounded tail.',
+        flight: 'Several quick wingbeats, then a glide.'
+      }
+    }
+  ];
   const $ = id => document.getElementById(id);
-  const fullDate = new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-  const shortDate = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
-  const shortTime = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
   const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
   const serialize = value => JSON.stringify(value);
-  let state, storageSnapshot = null, memoryOnly = false, needsInitialSave = false;
-  let currentView = 'bingo', showNextLine = false, toastTimer;
+  let state, storageSnapshot = null, memoryOnly = false, storageBlocked = false;
+  let currentView = 'bingo', toastTimer;
   let stopFireworks = () => {};
-  let selectedAnimal, selectedRecord, detailSnapshot, originalInput, originalISO;
-  let formIndex = 0, review, resetSnapshot, restorePreview, crewPreview;
-  let draftRound = null;
-  const draft = new Map();
-  let idHistory = [{ node: graph.start }];
+  let selectedAnimal, selectedCardId, formIndex = 0, pendingCard, pendingRestore;
+  let changeQueue = Promise.resolve();
   let factBag = [], currentFact;
   const returnFocus = new WeakMap();
   const viewScroll = new Map();
@@ -40,28 +46,48 @@
   function notice(message) {
     $('storage-message').textContent = message;
     $('storage-notice').hidden = false;
-    $('save-status').textContent = memoryOnly ? 'Only in this tab · save a backup' : 'Progress needs attention';
   }
   function showDialog(id) {
     const dialog = $(id);
     if (dialog.open) return;
     const active = document.activeElement;
-    returnFocus.set(dialog, { element: active, animal: active.dataset.animal, record: active.dataset.record, container: active.closest('#bingo-board, #guide-results, #id-candidates, #journal-records, #recent-sightings')?.id });
+    returnFocus.set(dialog, { element: active, animal: active.dataset.animal, container: active.closest('#bingo-board, #guide-results')?.id });
     dialog.showModal();
+    dialog.querySelector('.dialog-body').scrollTop = 0;
     const first = dialog.querySelector('button, input, textarea');
     if (first) first.focus({ preventScroll: true });
   }
-  document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('close', () => {
-    const previous = returnFocus.get(dialog);
-    if (!previous) return;
-    let target = previous.element;
-    if (!target.isConnected && previous.container) {
-      const container = $(previous.container);
-      target = [...container.querySelectorAll('button')].find(button => previous.record ? button.dataset.record === previous.record : button.dataset.animal === previous.animal);
-      if (!target) target = container.closest('dialog')?.querySelector('button') || document.querySelector(`[data-view="${currentView}"]`);
-    }
-    if (target && target.isConnected && !target.closest('[hidden]') && (!target.closest('dialog') || target.closest('dialog').open)) target.focus({ preventScroll: true });
-  }));
+  document.querySelectorAll('dialog').forEach(dialog => {
+    const close = dialog.querySelector('[data-close].close-button') || element('button', 'close-button', '×');
+    close.dataset.close = '';
+    if (!close.hasAttribute('aria-label')) close.setAttribute('aria-label', 'Close');
+    const body = element('div', 'dialog-body');
+    body.append(...[...dialog.childNodes].filter(node => node !== close));
+    const toolbar = element('div', 'dialog-toolbar');
+    toolbar.append(close);
+    dialog.replaceChildren(toolbar, body);
+    let startedOutside = false;
+    const outside = event => {
+      const bounds = dialog.getBoundingClientRect();
+      return event.clientX < bounds.left || event.clientX > bounds.right || event.clientY < bounds.top || event.clientY > bounds.bottom;
+    };
+    dialog.addEventListener('pointerdown', event => { startedOutside = event.button === 0 && outside(event); });
+    dialog.addEventListener('click', event => {
+      if (startedOutside && event.target === dialog && outside(event)) dialog.close();
+      startedOutside = false;
+    });
+    dialog.addEventListener('close', () => {
+      const previous = returnFocus.get(dialog);
+      if (!previous) return;
+      let target = previous.element;
+      if (!target.isConnected && previous.container) {
+        const container = $(previous.container);
+        target = [...container.querySelectorAll('button')].find(button => button.dataset.animal === previous.animal);
+        if (!target) target = container.closest('dialog')?.querySelector('button') || document.querySelector(`[data-view="${currentView}"]`);
+      }
+      if (target && target.isConnected && !target.closest('[hidden]') && (!target.closest('dialog') || target.closest('dialog').open)) target.focus({ preventScroll: true });
+    });
+  });
   document.querySelectorAll('dialog').forEach(dialog => dialog.addEventListener('keydown', event => {
     if (event.key !== 'Tab') return;
     const controls = [...dialog.querySelectorAll('button, input, select, textarea, a[href], summary, [tabindex]')].filter(node => {
@@ -84,169 +110,185 @@
   }
   function readStoredChange() {
     if (memoryOnly) return false;
-    let raw;
-    try { raw = localStorage.getItem(core.STORAGE_KEY); }
-    catch (_) { throw new Error('Browser storage is unavailable. Continue in this tab to save here, then download a backup.'); }
-    if (raw === storageSnapshot) return false;
-    storageSnapshot = raw;
-    const latest = raw && core.restoreState(raw, ids, drawIds);
-    if (latest) {
-      if (latest.id !== state.id) showNextLine = false;
+    try {
+      const raw = localStorage.getItem(core.STORAGE_KEY);
+      if (raw === storageSnapshot) return false;
+      storageSnapshot = raw;
+      const latest = raw && core.restoreState(raw, ids, cardIds);
+      if (!latest) { storageBlocked = true; throw new Error('Saved progress changed or was cleared. Reload before saving, or choose Play in this tab.'); }
       state = latest;
-      needsInitialSave = false;
-      render();
+      return true;
+    } catch (error) {
+      storageBlocked = true; notice(error.message || 'Saved progress is unavailable.');
+      throw error;
     }
-    notice(latest ? 'Progress changed in another tab. Review your selections again before saving.' : 'Browser progress was removed or became unreadable. This tab still has its card. Save a backup before continuing.');
-    return true;
   }
-  async function commit(candidate, expected) {
-    return withStorageLock(() => {
-      try {
-        if (!core.restoreState(serialize(candidate), ids, drawIds)) throw new Error('This change exceeds the journal limits or is invalid. Save a backup and remove older records before adding more.');
-        if (readStoredChange() || serialize(state) !== expected) throw new Error('Progress changed. Close this review and review the current card before saving again.');
-        if (!memoryOnly) {
-          localStorage.setItem(core.STORAGE_KEY, serialize(candidate));
-          storageSnapshot = serialize(candidate);
-        }
-        stopFireworks();
-        state = candidate;
-        needsInitialSave = false;
-        if (!memoryOnly) { $('storage-notice').hidden = true; $('save-status').textContent = 'Saved on this device'; }
+  function saveCard() {
+    if (memoryOnly) {
+      $('save-status').textContent = 'Playing in this tab';
+      return true;
+    }
+    try {
+      if (storageBlocked) throw new Error('Storage needs attention');
+      const saved = serialize(state);
+      localStorage.setItem(core.STORAGE_KEY, saved);
+      storageSnapshot = saved;
+      $('storage-notice').hidden = true;
+      $('save-status').textContent = 'Card saved on this device';
+      return true;
+    } catch (_) {
+      $('save-status').textContent = 'Changes could not be saved';
+      notice('Your card could not be saved. Retry, or choose to play in this tab.');
+      return false;
+    }
+  }
+  function changeCard(change, cardId = state.id, expected = null) {
+    const operation = changeQueue.then(() => withStorageLock(() => {
+      readStoredChange();
+      if (state.id !== cardId || (expected !== null && serialize(state) !== expected)) {
         render();
-        return true;
-      } catch (error) {
-        notice(/Progress changed|journal limits/.test(error.message) ? error.message : 'Could not save. Your card and draft are unchanged. Retry Save, or choose Continue in this tab and save again. Keep a backup file.');
+        tell('The card changed in another tab. Try again on this card.');
         return false;
       }
+      const previous = state, candidate = change(state);
+      if (!core.restoreState(serialize(candidate), ids, cardIds)) throw new Error('That card could not be updated.');
+      state = candidate;
+      if (!saveCard()) { state = previous; render(); return false; }
+      stopFireworks();
+      render();
+      if (core.newWinningLines(previous, state).length) { celebrate(); tell('Bingo!'); }
+      return true;
+    })).catch(error => { tell(error.message); return false; });
+    changeQueue = operation;
+    return operation;
+  }
+  function toggleSpotted(id, cardId = state.id) {
+    return changeCard(current => core.toggleSpotted(current, id), cardId);
+  }
+  function bindTileGestures(tile, id) {
+    let holdTimer, pointerId, startX, startY, suppressClick = false;
+    const clearHold = () => { clearTimeout(holdTimer); holdTimer = null; };
+    tile.addEventListener('pointerdown', event => {
+      if (!event.isPrimary || event.button !== 0) return;
+      clearHold();
+      pointerId = event.pointerId; startX = event.clientX; startY = event.clientY; suppressClick = false;
+      tile.setPointerCapture(pointerId);
+      holdTimer = setTimeout(() => {
+        holdTimer = null; suppressClick = true;
+        tile.focus({ preventScroll: true });
+        openAnimal(id);
+      }, 500);
+    });
+    tile.addEventListener('pointermove', event => {
+      if (event.pointerId !== pointerId) return;
+      if (Math.hypot(event.clientX - startX, event.clientY - startY) > 10) { clearHold(); suppressClick = true; }
+    });
+    for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) tile.addEventListener(type, event => {
+      if (event.pointerId !== pointerId) return;
+      clearHold();
+      if (type === 'pointercancel') suppressClick = true;
+    });
+    tile.addEventListener('contextmenu', event => { event.preventDefault(); clearHold(); suppressClick = true; if (!$('animal-dialog').open) openAnimal(id); });
+    tile.addEventListener('keydown', event => {
+      if (event.key === 'F10' && event.shiftKey) { event.preventDefault(); openAnimal(id); }
+    });
+    tile.addEventListener('click', event => {
+      if (suppressClick && event.detail !== 0) { suppressClick = false; return; }
+      suppressClick = false;
+      toggleSpotted(id);
     });
   }
   function initialize() {
-    let raw = null, legacy = null, canRead = true;
-    try { raw = localStorage.getItem(core.STORAGE_KEY); if (!raw) legacy = localStorage.getItem(core.LEGACY_KEY); }
-    catch (_) { canRead = false; }
+    let raw = null, previous = null;
+    try {
+      raw = localStorage.getItem(core.STORAGE_KEY);
+      if (!raw) previous = localStorage.getItem(core.PREVIOUS_KEY) || localStorage.getItem(core.LEGACY_KEY);
+    } catch (_) { storageBlocked = true; }
     storageSnapshot = raw;
-    state = raw ? core.restoreState(raw, ids, drawIds) : legacy ? core.migrateLegacy(legacy) : null;
+    state = raw ? core.restoreState(raw, ids, cardIds) : previous ? core.migratePrevious(previous, ids, cardIds) : null;
     if (!state) {
       state = core.createState(drawIds);
-      if (raw || legacy) notice('Saved data could not be read. It has been left in storage. You can load a backup or use this fresh card.');
+      if (raw || previous) storageBlocked = true;
     }
-    needsInitialSave = !raw && !(legacy && !core.migrateLegacy(legacy));
-    if (needsInitialSave && canRead) {
-      try {
-        localStorage.setItem(core.STORAGE_KEY, serialize(state));
-        storageSnapshot = serialize(state);
-        needsInitialSave = false;
-      } catch (_) { notice('This card could not be saved. Retry saving or choose Continue in this tab. Download a backup to keep your progress.'); }
+    const shared = readCardLink();
+    if (shared) {
+      if (!raw && !previous && !storageBlocked) { state = sharedState(shared, state.revision + 1); clearCardLink(); }
+      else pendingCard = { shared, cardId: state.id };
     }
-    if (!canRead) notice('Browser storage is unavailable. Choose Continue in this tab and download a backup to keep progress.');
-    render(); renderIdentification();
-    try {
-      const code = new URLSearchParams(location.hash.slice(1)).get('card');
-      if (code) previewCrew(code);
-    } catch (_) { tell('That shared card link could not be read.'); }
+    saveCard();
+    render();
+    if (pendingCard) showNewCard(pendingCard.shared);
   }
   function imageFor(animal, form = animal.forms[0], large = false, lazy = true) {
-    const img = element('img');
+    // Vary direction by animal, keeping it consistent across views and reloads.
+    let directionHash = 0;
+    for (const character of animal.id) directionHash = Math.imul(directionHash, 31) + character.charCodeAt(0);
+    const img = element('img', directionHash & 1 ? 'is-mirrored' : '');
     img.src = form.thumbnail;
     if (large) { img.srcset = `${form.thumbnail} 640w, ${form.image} 1200w`; img.sizes = '(max-width: 540px) calc(100vw - 16px), 800px'; }
-    img.alt = `${animal.name} — ${form.label}. Generated recognition illustration.`;
+    img.alt = `${animal.name} — ${form.label}`;
     img.width = 640; img.height = 640;
     img.loading = lazy ? 'lazy' : 'eager'; img.decoding = 'async';
     return img;
   }
-  function recordFor(animalId) { return state.journal.find(record => record.roundId === state.id && record.animalId === animalId); }
   function statusFor(animal) {
     const labels = [state.order.includes(animal.id) ? 'On this card' : 'Not on this card'];
-    if (recordFor(animal.id)) labels.push('Spotted this round');
-    if (state.journal.some(record => record.animalId === animal.id && record.roundId !== state.id)) labels.push('Seen before');
+    if (state.spotted.includes(animal.id)) labels.push('Spotted');
     return labels.join(' · ');
   }
   function render() {
-    const marks = core.sightings(state), wins = core.winningLines(state), closest = core.closestLine(state);
+    const marks = core.sightings(state), wins = core.winningLines(state);
     const count = Object.keys(marks).length;
     const winningIds = new Set(wins.flatMap(line => line.cells.map(index => state.order[index])));
-    $('spotted-count').textContent = count;
-    $('bingo-count').textContent = `${wins.length} ${wins.length === 1 ? 'bingo' : 'bingos'}`;
-    $('sighting-progress').value = count;
-    $('progress-message').textContent = count === 25 ? 'Full card! All 25 spotted.' : `${closest.remaining} to ${closest.remaining === 1 ? 'go' : 'spot'} on your closest line.`;
-    $('card-description').textContent = state.pool === 'legacy-v1' ? 'Your original card is preserved. Every square still counts.' : '25 daylight entries. Five in a line makes bingo.';
     $('bingo-banner').hidden = wins.length === 0;
     $('bingo-banner').textContent = count === 25 ? 'Full card! A river full of discoveries.' : `Bingo! ${wins.map(line => line.label).join(' · ')}`;
-    $('next-bingo-button').hidden = count === 25;
-    const next = core.lines.map(line => ({ ...line, missing: line.cells.filter(index => !marks[state.order[index]]) })).filter(line => line.missing.length).sort((a, b) => a.missing.length - b.missing.length)[0];
-    $('next-bingo-button').setAttribute('aria-pressed', String(showNextLine));
-    $('next-line-hint').hidden = !showNextLine || !next;
-    if (next) $('next-line-hint').textContent = `${next.label}: ${next.missing.map(index => byId.get(state.order[index]).name).join(', ')} still to spot.`;
+    const focusedTile = document.activeElement.closest('#bingo-board .animal-tile')?.dataset.animal;
     $('bingo-board').replaceChildren(...state.order.map((id, index) => {
       const animal = byId.get(id), spotted = marks[id];
-      const tile = element('button', `animal-tile${spotted ? ' is-spotted' : ''}${winningIds.has(id) ? ' in-bingo' : ''}${showNextLine && next && next.cells.includes(index) ? ' is-next' : ''}`);
+      const tile = element('button', `animal-tile${spotted ? ' is-spotted' : ''}${winningIds.has(id) ? ' in-bingo' : ''}`);
       tile.dataset.animal = id; tile.setAttribute('aria-pressed', String(Boolean(spotted)));
-      tile.setAttribute('aria-label', `${animal.name}. Row ${Math.floor(index / 5) + 1}, column ${index % 5 + 1}. ${spotted ? `Spotted ${fullDate.format(new Date(spotted))}` : 'Not yet spotted'}.${showNextLine && next && next.cells.includes(index) ? ' On highlighted next line.' : ''}`);
+      tile.setAttribute('aria-describedby', 'card-instructions');
+      tile.setAttribute('aria-keyshortcuts', 'Shift+F10');
+      tile.setAttribute('aria-label', `${animal.name}. Row ${Math.floor(index / 5) + 1}, column ${index % 5 + 1}. ${spotted ? 'Spotted' : 'Not yet spotted'}.`);
       const img = imageFor(animal, animal.forms[0], false, false); img.alt = '';
       tile.append(img, element('span', 'tile-name', animal.name));
-      const tileStatus = element('span', 'tile-state', spotted ? winningIds.has(id) ? '★ Bingo' : '✓ Spotted' : showNextLine && next && next.cells.includes(index) ? '→ Next' : 'To spot');
-      tile.append(tileStatus);
-      if (spotted) {
-        const time = element('time', 'tile-time', `${shortDate.format(new Date(spotted))} · ${shortTime.format(new Date(spotted))}`); time.dateTime = spotted;
-        tile.append(time);
-      } else tile.append(element('span', 'tile-time', 'Tap to look'));
-      tile.addEventListener('click', () => openAnimal(id));
+      if (spotted) tile.append(element('span', 'tile-state', winningIds.has(id) ? '★' : '✓'));
+      bindTileGestures(tile, id);
       return tile;
     }));
-    const records = [...state.journal].sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt));
-    $('journal-summary').textContent = records.length ? `${records.length} saved ${records.length === 1 ? 'sighting' : 'sightings'} across your rounds.` : 'Your first discovery is waiting.';
-    $('recent-sightings').replaceChildren(...records.slice(0, 4).map(record => recordItem(record)));
-    const discovered = new Set(records.map(record => record.animalId));
-    const milestones = [];
-    if (animals.some(animal => animal.group === 'Turtles' && discovered.has(animal.id))) milestones.push('First turtle discovered');
-    if (animals.filter(animal => animal.group === 'Birds' && discovered.has(animal.id)).length >= 5) milestones.push('Five bird species discovered');
-    for (const group of ['Birds', 'Mammals', 'Turtles', 'Amphibians', 'Fish']) if (animals.filter(animal => animal.group === group).every(animal => discovered.has(animal.id))) milestones.push(`All ${group.toLowerCase()} in the catalog discovered`);
-    $('milestones').textContent = milestones.length ? `Collection: ${milestones.join(' · ')}.` : `${discovered.size} of 41 catalog entries discovered.`;
+    if (focusedTile && !document.querySelector('dialog[open]')) $('bingo-board').querySelector(`[data-animal="${focusedTile}"]`)?.focus({ preventScroll: true });
     if (currentView === 'animals') renderCatalog();
-    renderDraft();
-    if ($('journal-dialog').open) renderJournal();
-    if (memoryOnly) $('save-status').textContent = 'Only in this tab · save a backup';
-    updateShareButton();
+    if ($('animal-dialog').open) updateAnimalAction();
   }
-  function recordItem(record) {
-    const animal = byId.get(record.animalId), li = element('li'), button = element('button');
-    button.dataset.record = record.id;
-    const img = imageFor(animal); img.alt = '';
-    const text = element('span');
-    const time = element('time', '', fullDate.format(new Date(record.observedAt))); time.dateTime = record.observedAt;
-    text.append(element('strong', '', animal.name), time, element('small', '', record.roundId === state.id ? 'This round' : 'Previous round'));
-    button.append(img, text); button.addEventListener('click', () => openAnimal(animal.id, record.id));
-    li.append(button); return li;
-  }
-  function renderJournal() { $('journal-records').replaceChildren(...[...state.journal].sort((a, b) => Date.parse(b.observedAt) - Date.parse(a.observedAt)).map(recordItem)); }
   function navigate(view) {
     viewScroll.set(currentView, window.scrollY);
     currentView = view;
-    for (const name of ['bingo', 'animals', 'identify', 'surprise']) $(`view-${name}`).hidden = view !== name;
+    for (const name of ['bingo', 'animals', 'surprise']) $(`view-${name}`).hidden = view !== name;
     document.querySelectorAll('[data-view]').forEach(button => { if (button.dataset.view === view) button.setAttribute('aria-current', 'page'); else button.removeAttribute('aria-current'); });
     if (view === 'animals') renderCatalog();
-    if (view === 'surprise' && !currentFact) nextFact();
+    if (view === 'surprise') nextFact();
     $(`${view === 'bingo' ? 'bingo' : view}-title`).focus({ preventScroll: true });
     window.scrollTo(0, viewScroll.get(view) || 0);
   }
-  function catalogCard(animal, allowSelect) {
-    const article = element('article', `guide-item${draft.has(animal.id) ? ' is-selected' : ''}`), button = element('button');
+  function catalogCard(animal) {
+    const spotted = state.spotted.includes(animal.id);
+    const article = element('article', `guide-item${spotted ? ' is-selected' : ''}`), button = element('button');
     button.dataset.animal = animal.id;
     button.append(imageFor(animal), element('h3', '', animal.name), element('p', '', animal.cue), element('small', '', statusFor(animal)));
     button.addEventListener('click', () => openAnimal(animal.id)); article.append(button);
-    if (allowSelect) {
-      const label = element('label', 'check-label'), input = element('input'); input.type = 'checkbox'; input.checked = draft.has(animal.id); input.disabled = Boolean(recordFor(animal.id));
-      input.addEventListener('change', () => {
-        if (input.checked) {
-          if (draft.size && draftRound !== state.id) { input.checked = false; tell('These selections belong to an older card. Clear them before selecting for this card.'); return; }
-          draftRound = state.id; draft.set(animal.id, new Date().toISOString());
-        } else { draft.delete(animal.id); if (!draft.size) draftRound = null; }
-        article.classList.toggle('is-selected', input.checked);
-        label.lastChild.textContent = input.checked ? 'Selected · review to save' : 'Select sighting';
-        renderDraft();
-      });
-      label.append(input, document.createTextNode(recordFor(animal.id) ? 'Saved · open to correct' : draft.has(animal.id) ? 'Selected · review to save' : 'Select sighting')); article.append(label);
-    }
+    if (!state.order.includes(animal.id)) return article;
+    const mark = element('button', 'outline-button spot-button', spotted ? '✓ Spotted' : 'Mark spotted');
+    mark.dataset.animal = animal.id;
+    mark.setAttribute('aria-label', `${spotted ? 'Unmark' : 'Mark'} ${animal.name} as spotted`);
+    mark.setAttribute('aria-pressed', String(spotted));
+    mark.addEventListener('click', async () => {
+      mark.disabled = true;
+      try {
+        await toggleSpotted(animal.id);
+        $('guide-results').querySelector(`.spot-button[data-animal="${animal.id}"]`)?.focus({ preventScroll: true });
+      } finally { mark.disabled = false; }
+    });
+    article.append(mark);
     return article;
   }
   function renderCatalog() {
@@ -254,48 +296,55 @@
     const filtered = animals.filter(animal => (group === 'All' || animal.group === group) && (!$('card-filter').checked || state.order.includes(animal.id)) && `${animal.name} ${animal.scientific} ${(animal.aliases || []).join(' ')} ${animal.cue} ${animal.look}`.toLowerCase().includes(query));
     $('guide-count').textContent = `${filtered.length} ${filtered.length === 1 ? 'entry' : 'entries'}`;
     $('guide-empty').hidden = filtered.length !== 0;
-    $('guide-results').replaceChildren(...filtered.map(animal => catalogCard(animal, true)));
+    $('guide-results').replaceChildren(...filtered.map(animal => catalogCard(animal)));
   }
-  function renderDraft() {
-    $('draft-bar').hidden = draft.size === 0;
-    $('draft-count').textContent = `${draft.size} to save${draft.size && draftRound !== state.id ? ' · from an older card' : ''}`;
+  function updateAnimalAction() {
+    const onCard = state.order.includes(selectedAnimal.id), spotted = state.spotted.includes(selectedAnimal.id);
+    $('animal-status').textContent = statusFor(selectedAnimal);
+    $('animal-spot-button').hidden = !onCard;
+    $('animal-spot-button').textContent = spotted ? 'Undo spotted' : 'Mark spotted';
+    $('animal-spot-button').setAttribute('aria-pressed', String(spotted));
   }
-  function localInputDate(date) {
-    const pad = value => String(value).padStart(2, '0');
-    return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
-  }
-  function openAnimal(id, recordId) {
+  function openAnimal(id) {
     selectedAnimal = byId.get(id);
-    selectedRecord = recordId ? state.journal.find(record => record.id === recordId) : recordFor(id);
-    detailSnapshot = serialize(state); formIndex = 0;
+    selectedCardId = state.id;
+    formIndex = 0;
     $('animal-name').textContent = selectedAnimal.name;
     $('animal-scientific').textContent = selectedAnimal.scientific;
     $('animal-status').textContent = statusFor(selectedAnimal);
     $('animal-cue').textContent = selectedAnimal.cue;
     $('animal-look').textContent = selectedAnimal.look;
-    $('animal-illustration').textContent = 'Generated recognition art. Field marks may be simplified or hidden; not independently certified identification material.';
+    $('animal-flight-guide').hidden = !selectedAnimal.silhouette;
     const cautions = [];
-    if (!state.order.includes(id)) cautions.push('Not on your card. You can still save this sighting.');
-    if (id === 'jumping-fish') cautions.push('See a fish actually leave the water. A splash alone is insufficient. The Common Carp illustration does not identify every leaping fish.');
-    if (id === 'smallmouth-bass') cautions.push('A brief splash is not enough to identify Smallmouth Bass. Use a clear view of its body and jaw.');
-    if (selectedRecord && selectedRecord.roundId !== state.id) cautions.push('You are editing a previous-round sighting. It will not mark this card.');
+    if (id === 'jumping-fish') cautions.push('Spot a fish leaping out of the water, rather than just a splash.');
     $('animal-caution').textContent = cautions.join(' '); $('animal-caution').hidden = cautions.length === 0;
-    const iso = selectedRecord ? selectedRecord.observedAt : draft.get(id) || new Date().toISOString();
-    originalISO = iso; originalInput = localInputDate(new Date(iso));
-    $('sighting-time').value = originalInput;
-    $('sighting-time').max = localInputDate(new Date());
-    $('sighting-error').hidden = true;
-    $('save-sighting').textContent = selectedRecord ? 'Review date correction' : 'I spotted it · Review';
-    $('remove-sighting').hidden = !selectedRecord;
-    const source = $('animal-source'); source.hidden = !selectedAnimal.source;
-    if (selectedAnimal.source) source.href = selectedAnimal.source; else source.removeAttribute('href');
-    $('animal-evidence').replaceChildren(...selectedAnimal.occurrence.map(record => {
-      const p = element('p'); p.append(element('strong', '', record.scope), document.createTextNode(` — ${record.claim} (${record.date}). `));
-      if (record.url) { const link = element('a', '', record.title); link.href = record.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; p.append(link); }
-      p.append(element('small', '', ` ${record.locator}`)); return p;
+    $('animal-facts').replaceChildren(...facts.filter(fact => fact.animalId === id).map(fact => {
+      const item = element('li');
+      item.append(element('p', '', fact.text));
+      return item;
     }));
-    $('animal-dialog').querySelector('details').open = false;
-    renderForms(); showDialog('animal-dialog'); $('animal-dialog').scrollTop = 0;
+    updateAnimalAction();
+    renderForms(); showDialog('animal-dialog'); $('animal-dialog').querySelector('.dialog-body').scrollTop = 0;
+  }
+  function openRaptorGuide() {
+    const largestSpan = Math.max(...raptorGuides.map(animal => animal.silhouette.referenceSpanCm));
+    $('raptor-grid').replaceChildren(...raptorGuides.map(animal => {
+      const guide = animal.silhouette;
+      const card = element('article', 'raptor-card');
+      card.dataset.raptor = animal.id;
+      const art = element('div', 'raptor-art');
+      const image = element('img');
+      image.src = guide.image;
+      image.alt = `${animal.name} flight outline: ${guide.outline}`;
+      image.style.width = `${guide.referenceSpanCm / largestSpan * 100}%`;
+      art.append(image);
+      const [minimum, maximum] = guide.wingspanCm;
+      const metric = minimum === maximum ? `${minimum}` : `${minimum}–${maximum}`;
+      const imperial = minimum === maximum ? `${Math.round(minimum / 2.54)}` : `${Math.round(minimum / 2.54)}–${Math.round(maximum / 2.54)}`;
+      card.append(art, element('h3', '', animal.name), element('p', 'raptor-span', `Wingspan ${metric} cm · ${imperial} in`), element('p', '', guide.outline), element('p', 'raptor-flight', guide.flight));
+      return card;
+    }));
+    showDialog('raptor-dialog');
   }
   function renderForms() {
     const forms = selectedAnimal.forms;
@@ -319,31 +368,10 @@
     $('animal-art').classList.toggle('compare', compare);
     $('animal-art').setAttribute('aria-labelledby', `form-tab-${formIndex}`);
     $('animal-art').replaceChildren(...(compare ? forms : [forms[formIndex]]).map(form => {
-      const figure = element('figure'); figure.append(imageFor(selectedAnimal, form, true, false), element('figcaption', '', `${form.label}. ${form.description}`)); return figure;
+      const figure = element('figure'); figure.append(imageFor(selectedAnimal, form, true, false));
+      if (compare) figure.append(element('figcaption', '', form.label));
+      return figure;
     }));
-  }
-  function readSightingTime() {
-    const value = $('sighting-time').value;
-    const date = value === originalInput ? new Date(originalISO) : new Date(value);
-    if (!value || !Number.isFinite(date.getTime()) || date.getTime() > Date.now() + 60000 || (value !== originalInput && localInputDate(date) !== value)) return null;
-    return date.toISOString();
-  }
-  function openReview(action) {
-    if (action.type === 'batch' && action.observations.some(item => recordFor(item.animalId))) {
-      tell('A selected animal was already saved. Clear selections and open its saved record to correct it.');
-      return;
-    }
-    review = { ...action, expected: serialize(state), roundId: state.id };
-    $('review-title').textContent = action.type === 'remove' ? 'Remove this sighting?' : action.type === 'correct' ? 'Save this date correction?' : 'Save these sightings?';
-    $('confirm-save').textContent = action.type === 'remove' ? 'Remove sighting' : 'Save sightings';
-    $('review-list').replaceChildren(...action.observations.map(observation => {
-      const item = element('div'), animal = byId.get(observation.animalId);
-      const time = element('time', '', fullDate.format(new Date(observation.observedAt))); time.dateTime = observation.observedAt;
-      item.append(element('strong', '', animal.name), time);
-      if (!state.order.includes(animal.id)) item.append(element('small', '', 'Not on your card. You can still save this sighting.'));
-      return item;
-    }));
-    $('review-error').hidden = true; showDialog('review-dialog');
   }
   function celebrate() {
     stopFireworks();
@@ -416,34 +444,6 @@
     stopFireworks = () => { cancelAnimationFrame(frame); window.removeEventListener('resize', resize); context.clearRect(0, 0, width, height); canvas.hidden = true; $('celebration').hidden = true; };
     resize(); window.addEventListener('resize', resize); frame = requestAnimationFrame(draw);
   }
-  function renderIdentification() {
-    const current = idHistory[idHistory.length - 1];
-    $('id-path').textContent = idHistory.slice(1).map(step => step.label).join(' → ');
-    $('id-answers').replaceChildren(); $('id-candidates').replaceChildren();
-    $('id-back').disabled = idHistory.length === 1;
-    $('id-note').hidden = true;
-    if (current.node) {
-      const node = graph.nodes[current.node]; $('id-question').textContent = node.question;
-      $('id-answers').append(...node.answers.filter(answer => !/^(Not sure|None of these)/i.test(answer.label)).map(answer => {
-        const button = element('button', 'outline-button', answer.label);
-        button.addEventListener('click', () => { idHistory.push(answer.next ? { node: answer.next, label: answer.label } : { candidates: answer.candidates || [], note: answer.note, label: answer.label }); renderIdentification(); focusIdentification(); }); return button;
-      }));
-      if (node.note || node.references) {
-        $('id-note').hidden = false; $('id-note').textContent = node.note || '';
-        for (const reference of node.references || []) { const link = element('a', '', ` ${reference.title} ↗`); link.href = reference.url; link.target = '_blank'; link.rel = 'noopener noreferrer'; $('id-note').append(link); }
-      }
-    } else {
-      $('id-question').textContent = current.candidates.length ? 'Compare these candidates' : 'Not enough detail to identify it';
-      $('id-candidates').append(...current.candidates.map(id => catalogCard(byId.get(id), false)));
-      $('id-note').hidden = false;
-      $('id-note').textContent = current.note || 'These are possibilities. Check the positive field marks and references. Other local species may fit; no sighting has been recorded.';
-    }
-  }
-  function focusIdentification() {
-    $('id-question').tabIndex = -1;
-    $('id-question').focus({ preventScroll: true });
-    $('id-question').scrollIntoView({ block: 'nearest' });
-  }
   function nextFact() {
     if (!factBag.length) {
       factBag = core.shuffle(facts);
@@ -453,154 +453,162 @@
     const animal = byId.get(currentFact.animalId);
     $('fact-image').replaceChildren(imageFor(animal, animal.forms[0], true, false));
     $('fact-animal').textContent = animal.name; $('fact-text').textContent = currentFact.text;
-    $('fact-context').textContent = currentFact.context; $('fact-source').href = currentFact.source; $('fact-source').textContent = `${currentFact.title} ↗`;
   }
-  function backupFile() { return new File([core.exportBackup(state)], `aarc-bingo-${new Date().toISOString().slice(0, 10)}.json`, { type: 'application/json' }); }
-  function downloadBackup() {
-    const file = backupFile(), url = URL.createObjectURL(file), link = element('a'); link.href = url; link.download = file.name; document.body.append(link); link.click(); link.remove();
-    setTimeout(() => URL.revokeObjectURL(url), 60000);
-    tell('Backup download requested. Keep the JSON file outside this browser.');
+  function sharedState(shared, revision) {
+    return { ...core.createState(drawIds, { revision }), pool: shared.pool, order: [...shared.order] };
   }
-  function updateShareButton() {
-    try { const file = backupFile(); $('share-progress').hidden = !(navigator.share && navigator.canShare && navigator.canShare({ files: [file] })); }
-    catch (_) { $('share-progress').hidden = true; }
+  function clearCardLink() {
+    const url = new URL(location.href), params = new URLSearchParams(url.hash.slice(1));
+    if (!params.has('card')) return;
+    params.delete('card'); url.hash = params.toString();
+    history.replaceState(history.state, '', url);
+  }
+  function readCardLink() {
+    const params = new URLSearchParams(location.hash.slice(1));
+    if (!params.has('card')) return null;
+    const shared = core.readCardCode(params.get('card'), ids, cardIds);
+    if (!shared) tell('That shared card link couldn’t be read.');
+    if (!shared || shared.order.every((id, index) => id === state.order[index])) {
+      clearCardLink();
+      return null;
+    }
+    return shared;
+  }
+  function openCardLink() {
+    const operation = changeQueue.then(() => withStorageLock(() => {
+      const updated = readStoredChange(), shared = readCardLink();
+      if (!shared) { if (updated) render(); return; }
+      if (updated) render();
+      showNewCard(shared);
+    })).catch(error => tell(error.message));
+    changeQueue = operation;
+    return operation;
+  }
+  function showNewCard(shared = null) {
+    pendingCard = { shared, cardId: state.id };
+    $('reset-title').textContent = shared ? 'Play this bingo card?' : 'New bingo card?';
+    $('reset-description').textContent = 'Your current marks will be cleared.';
+    $('confirm-reset').textContent = shared ? 'Play this card' : 'New card';
+    showDialog('reset-dialog');
+  }
+  async function shareCard() {
+    const url = new URL(location.href); url.search = ''; url.hash = new URLSearchParams({ card: core.cardCode(state) }).toString();
+    if (navigator.share) {
+      try { await navigator.share({ title: 'Huron River Wildlife Bingo', text: 'Play the same card and spot your own wildlife.', url: url.href }); return; }
+      catch (error) { if (error.name === 'AbortError') return; }
+    }
+    try { await navigator.clipboard.writeText(url.href); tell('Card link copied.'); }
+    catch (_) { window.prompt('Copy this card link:', url.href); }
+  }
+  async function downloadBackup() {
+    await changeQueue;
+    const backup = { format: 'aarc-river-bingo', version: core.VERSION, state };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(backup, null, 2)], { type: 'application/json' }));
+    const link = element('a'); link.href = url; link.download = 'river-bingo-backup.json';
+    $('help-dialog').querySelector('.dialog-body').append(link); link.click(); link.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function clearBackupReview() {
+    pendingRestore = null;
+    $('backup-review').hidden = true;
+    $('backup-status').textContent = '';
   }
   async function previewBackup(file) {
-    if (!file || file.size > core.MAX_BACKUP_BYTES) { tell('Choose a bingo JSON backup smaller than 2 MB. Your progress is unchanged.'); return; }
+    clearBackupReview();
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { $('backup-status').textContent = 'Choose a bingo backup smaller than 2 MB.'; return; }
     try {
-      const backup = core.readBackup(await file.text(), ids, drawIds);
-      if (!backup) { tell('That backup is invalid or uses an unsupported version. Your progress is unchanged.'); return; }
-      restorePreview = { ...backup, expected: serialize(state) };
-      const p = element('p', '', `Backup made ${fullDate.format(new Date(backup.exportedAt))}. ${backup.state.journal.length} sightings; ${Object.keys(core.sightings(backup.state)).length}/25 on that card.`);
-      const list = element('ol'); list.append(...backup.state.order.map(id => element('li', '', byId.get(id).name)));
-      $('restore-preview').replaceChildren(p, list); $('restore-error').hidden = true;
-      showDialog('restore-dialog');
-    } catch (_) { tell('That file could not be read. Your progress is unchanged.'); }
-  }
-  function previewCrew(code) {
-    const parsed = core.readCardCode(code, ids, drawIds);
-    if (!parsed) { $('crew-error').textContent = 'That card code is invalid or uses an unsupported version.'; $('crew-error').hidden = false; return; }
-    crewPreview = { ...parsed, expected: serialize(state) };
-    $('crew-preview').replaceChildren(...parsed.order.map(id => element('li', '', byId.get(id).name)));
-    showDialog('crew-confirm-dialog');
-  }
-  function gameURL() { const url = new URL(location.href); url.hash = ''; url.search = ''; return url; }
-  async function copyText(text) {
-    try { await navigator.clipboard.writeText(text); tell('Copied. Ready to share with your crew.'); }
-    catch (_) { $('crew-code').value = text; $('crew-code').focus(); $('crew-code').select(); tell('Select and copy the text in the card box.'); }
+      const value = JSON.parse(await file.text());
+      if (value?.format !== undefined && (value.format !== 'aarc-river-bingo' || ![1, 2, core.VERSION].includes(value.version) || value.version !== value.state?.version)) throw new Error('Invalid backup version');
+      const raw = serialize(value?.format === 'aarc-river-bingo' ? value.state : value);
+      const restored = core.restoreState(raw, ids, cardIds) || core.migratePrevious(raw, ids, cardIds);
+      if (!restored) throw new Error('Invalid backup');
+      pendingRestore = { state: restored, cardId: state.id, snapshot: serialize(state) };
+      const count = restored.spotted.length;
+      $('backup-preview').textContent = `Restore this card with ${count} marked ${count === 1 ? 'square' : 'squares'}? This replaces your current card and marks.`;
+      $('backup-review').hidden = false;
+    } catch (_) { $('backup-status').textContent = 'That file isn’t a valid bingo backup.'; }
   }
 
   document.querySelectorAll('[data-view],[data-go]').forEach(button => button.addEventListener('click', () => navigate(button.dataset.view || button.dataset.go)));
+  $('bingo-home-link').addEventListener('click', event => { event.preventDefault(); navigate('bingo'); window.scrollTo(0, 0); });
   $('big-pictures').addEventListener('click', () => { $('card-filter').checked = true; $('guide-search').value = ''; $('guide-group').value = 'All'; navigate('animals'); });
   $('guide-search').addEventListener('input', renderCatalog); $('guide-group').addEventListener('change', renderCatalog); $('card-filter').addEventListener('change', renderCatalog);
-  $('next-bingo-button').addEventListener('click', () => { showNextLine = !showNextLine; render(); $('next-bingo-button').focus(); });
-  $('journal-button').addEventListener('click', () => { renderJournal(); showDialog('journal-dialog'); });
+  $('retry-storage').addEventListener('click', () => {
+    if (storageBlocked) { tell('Saved data is unavailable or unreadable. Save a backup before clearing browser data, or play in this tab.'); return; }
+    changeQueue = changeQueue.then(() => withStorageLock(() => {
+      if (readStoredChange()) render();
+      saveCard();
+    })).catch(error => tell(error.message));
+  });
+  $('memory-mode').addEventListener('click', () => {
+    memoryOnly = true; $('storage-notice').hidden = true; saveCard();
+    tell('Playing in this tab. Save a backup to keep your marks.');
+  });
   $('help-button').addEventListener('click', () => showDialog('help-dialog'));
-  $('sighting-form').addEventListener('submit', event => {
+  $('save-backup').addEventListener('click', downloadBackup);
+  $('backup-file').addEventListener('change', event => { const file = event.target.files[0]; event.target.value = ''; previewBackup(file); });
+  $('cancel-backup').addEventListener('click', clearBackupReview);
+  $('help-dialog').addEventListener('close', clearBackupReview);
+  $('restore-backup').addEventListener('click', async () => {
+    const button = $('restore-backup'), backup = pendingRestore;
+    if (!backup || button.disabled) return;
+    button.disabled = true;
+    try {
+      const restored = await changeCard(current => ({ ...backup.state, revision: current.revision + 1 }), backup.cardId, backup.snapshot);
+      clearBackupReview();
+      if (restored) { $('help-dialog').close(); navigate('bingo'); window.scrollTo(0, 0); tell('Backup restored.'); }
+      else $('backup-status').textContent = 'Your card changed. Choose the backup again to review it.';
+    } finally { button.disabled = false; }
+  });
+  document.querySelectorAll('[data-external-name]').forEach(link => link.addEventListener('click', event => {
     event.preventDefault();
-    const observedAt = readSightingTime();
-    if (!observedAt) { $('sighting-error').textContent = 'Choose a valid local time that is not in the future. A time skipped by daylight saving cannot be used.'; $('sighting-error').hidden = false; $('sighting-time').focus(); return; }
-    if (serialize(state) !== detailSnapshot) { $('sighting-error').textContent = 'Progress changed. Close and reopen this animal before saving.'; $('sighting-error').hidden = false; return; }
-    if (selectedRecord) openReview({ type: 'correct', recordId: selectedRecord.id, observations: [{ animalId: selectedAnimal.id, observedAt }] });
-    else {
-      if (draft.size && draftRound !== state.id) { $('sighting-error').textContent = 'Clear selections from the older card before saving for this round.'; $('sighting-error').hidden = false; return; }
-      draftRound = state.id; draft.set(selectedAnimal.id, observedAt); renderDraft();
-      openReview({ type: 'batch', observations: [...draft].map(([animalId, time]) => ({ animalId, observedAt: time })) });
-    }
+    $('external-link-title').textContent = `Visit ${link.dataset.externalName}?`;
+    $('external-link-confirm').href = link.href;
+    $('external-link-confirm').textContent = `Leave for ${link.dataset.externalName}`;
+    showDialog('external-link-dialog');
+  }));
+  $('raptor-guide-button').addEventListener('click', openRaptorGuide);
+  $('animal-flight-guide').addEventListener('click', openRaptorGuide);
+  $('animal-spot-button').addEventListener('click', async () => {
+    const button = $('animal-spot-button');
+    if (button.disabled || button.hidden) return;
+    button.disabled = true;
+    try { if (await toggleSpotted(selectedAnimal.id, selectedCardId)) $('animal-dialog').close(); }
+    finally { button.disabled = false; }
   });
-  $('remove-sighting').addEventListener('click', () => {
-    if (serialize(state) !== detailSnapshot) { tell('Progress changed. Close and reopen this sighting first.'); return; }
-    openReview({ type: 'remove', recordId: selectedRecord.id, observations: [{ animalId: selectedAnimal.id, observedAt: selectedRecord.observedAt }] });
+  $('share-card').addEventListener('click', shareCard);
+  $('new-card-button').addEventListener('click', () => {
+    showNewCard();
   });
-  $('review-batch').addEventListener('click', () => {
-    if (draftRound !== state.id) { tell('These selections belong to an older card. Clear them before saving on this card.'); return; }
-    if ([...draft.keys()].some(id => recordFor(id))) { tell('A selected animal was already saved in another tab. Clear and review your selections.'); return; }
-    openReview({ type: 'batch', observations: [...draft].map(([animalId, observedAt]) => ({ animalId, observedAt })) });
+  $('reset-dialog').addEventListener('close', () => {
+    if (pendingCard?.shared) clearCardLink();
+    pendingCard = null;
   });
-  $('confirm-save').addEventListener('click', async () => {
-    const action = review; if (!action || $('confirm-save').disabled) return;
-    $('confirm-save').disabled = true;
-    try {
-      const previous = state;
-      if (serialize(state) !== action.expected || state.id !== action.roundId) { $('review-error').textContent = 'Progress changed. Cancel and review the current card again.'; $('review-error').hidden = false; return; }
-      const candidate = action.type === 'batch' ? core.recordSightings(state, action.observations, ids) : core.updateSighting(state, action.recordId, action.type === 'remove' ? null : action.observations[0].observedAt);
-      if (!await commit(candidate, action.expected)) { $('review-error').textContent = 'Nothing was saved. Check the storage notice, then retry or cancel and review again.'; $('review-error').hidden = false; return; }
-      if (action.type === 'batch') { for (const item of action.observations) draft.delete(item.animalId); if (!draft.size) draftRound = null; }
-      renderDraft(); if (currentView === 'animals') renderCatalog();
-      $('review-dialog').close(); if ($('animal-dialog').open) $('animal-dialog').close();
-      const wins = core.newWinningLines(previous, state);
-      if (wins.length) { celebrate(); tell(`Bingo! ${wins.map(line => line.label).join(' and ')} complete.`); }
-      else tell(action.type === 'remove' ? 'Sighting removed. Your card has been recalculated.' : action.type === 'correct' ? 'Sighting date corrected.' : `${action.observations.length} ${action.observations.length === 1 ? 'sighting' : 'sightings'} saved.`);
-    } catch (error) {
-      $('review-error').textContent = error.message;
-      $('review-error').hidden = false;
-    } finally { $('confirm-save').disabled = false; }
-  });
-  $('discard-draft').addEventListener('click', () => showDialog('discard-dialog'));
-  $('confirm-discard').addEventListener('click', () => { draft.clear(); draftRound = null; renderDraft(); if (currentView === 'animals') renderCatalog(); $('discard-dialog').close(); });
-  $('new-card-button').addEventListener('click', () => { resetSnapshot = serialize(state); $('reset-draft-note').hidden = draft.size === 0; showDialog('reset-dialog'); });
   $('confirm-reset').addEventListener('click', async () => {
-    if ($('confirm-reset').disabled) return; $('confirm-reset').disabled = true;
+    if (!pendingCard || $('confirm-reset').disabled) return;
+    const choice = pendingCard;
+    $('confirm-reset').disabled = true;
     try {
-      const candidate = core.createState(drawIds, { journal: state.journal, revision: state.revision + 1 });
-      if (!await commit(candidate, resetSnapshot)) { tell('No new card was started. Review current progress and storage.'); return; }
-      draft.clear(); draftRound = null; showNextLine = false; render(); $('reset-dialog').close(); tell('Your daylight card is ready. The journal stays with you.');
+      const changed = await changeCard(current => choice.shared ? sharedState(choice.shared, current.revision + 1) : core.createState(drawIds, { revision: current.revision + 1 }), choice.cardId);
+      if (changed) $('reset-dialog').close();
+      if (changed) { navigate('bingo'); window.scrollTo(0, 0); tell('New card ready.'); }
     } finally { $('confirm-reset').disabled = false; }
   });
-  $('retry-storage').addEventListener('click', async () => {
-    if (memoryOnly) { tell('This tab is in temporary mode. Download a backup to keep its progress.'); return; }
-    if (await commit(state, serialize(state))) tell('Current progress saved. Review and save any pending selections.');
-  });
-  $('memory-mode').addEventListener('click', () => { memoryOnly = true; notice('You chose to continue in this tab. Progress is temporary. Review and save pending sightings, then download a backup.'); render(); });
   window.addEventListener('storage', async event => {
     if (event.key !== core.STORAGE_KEY && event.key !== null) return;
-    try { if (event.storageArea && event.storageArea !== localStorage) return; await withStorageLock(() => { if (readStoredChange()) tell('Progress changed in another tab. Draft selections have been kept for review.'); }); }
-    catch (_) { notice('Storage is unavailable. Keep this tab open and save a backup.'); }
+    try { await withStorageLock(() => { if (readStoredChange()) { stopFireworks(); render(); } }); }
+    catch (error) { tell(error.message); }
   });
-  $('id-back').addEventListener('click', () => { if (idHistory.length > 1) idHistory.pop(); renderIdentification(); focusIdentification(); });
-  for (const id of ['id-unsure', 'id-none']) $(id).addEventListener('click', () => { idHistory.push({ candidates: [], label: id === 'id-unsure' ? 'Not sure' : 'None of these', note: 'Other local species are possible. Leave this unresolved, or go back and compare the visible marks. No sighting has been saved.' }); renderIdentification(); focusIdentification(); });
-  $('id-restart').addEventListener('click', () => { idHistory = [{ node: graph.start }]; renderIdentification(); focusIdentification(); });
+  window.addEventListener('hashchange', () => {
+    if (new URLSearchParams(location.hash.slice(1)).has('card')) openCardLink();
+  });
   $('next-fact').addEventListener('click', nextFact); $('fact-detail').addEventListener('click', () => openAnimal(currentFact.animalId));
-  document.querySelectorAll('.backup-trigger').forEach(button => button.addEventListener('click', downloadBackup));
-  $('backup-input').addEventListener('change', event => { const file = event.target.files[0]; event.target.value = ''; if (file) previewBackup(file); });
-  $('confirm-restore').addEventListener('click', async () => {
-    if (!restorePreview || $('confirm-restore').disabled) return;
-    if (serialize(state) === serialize(restorePreview.state)) { $('restore-dialog').close(); tell('This backup already matches your progress. Nothing changed.'); return; }
-    $('confirm-restore').disabled = true;
-    try {
-      if (!await commit(restorePreview.state, restorePreview.expected)) { $('restore-error').textContent = 'Restore did not change your progress. Check storage or reopen the backup preview.'; $('restore-error').hidden = false; return; }
-      draft.clear(); draftRound = null; showNextLine = false; render(); $('restore-dialog').close(); tell('Backup restored. Card order and original sighting times recovered.');
-    } finally { $('confirm-restore').disabled = false; }
-  });
-  $('email-progress').addEventListener('click', () => {
-    const body = `My Huron River Wildlife Bingo progress: ${Object.keys(core.sightings(state)).length}/25 spotted, ${core.winningLines(state).length} bingos; ${state.journal.length} journal sightings.\n\nPlay: ${gameURL().href}\n\nTo send a restorable backup, use Save backup in the game and attach the downloaded JSON file here. This message does not contain the backup.`;
-    location.href = `mailto:?subject=${encodeURIComponent('Huron River Wildlife Bingo progress')}&body=${encodeURIComponent(body)}`;
-    tell('Mail composer requested. Download a backup and attach it manually for recovery.');
-  });
-  $('share-progress').addEventListener('click', async () => {
-    const file = backupFile();
-    try {
-      if (!navigator.canShare || !navigator.canShare({ files: [file] })) { downloadBackup(); return; }
-      await navigator.share({ files: [file], title: 'Huron River Wildlife Bingo backup' });
-    } catch (error) { if (error.name !== 'AbortError') { tell('File sharing is unavailable. Use Save backup and attach the file manually.'); } }
-  });
-  $('crew-button').addEventListener('click', () => { $('crew-code').value = core.cardCode(state); $('crew-error').hidden = true; showDialog('crew-dialog'); });
-  $('copy-code').addEventListener('click', () => copyText(core.cardCode(state)));
-  $('copy-card-link').addEventListener('click', () => { const url = gameURL(); url.hash = new URLSearchParams({ card: core.cardCode(state) }).toString(); copyText(url.href); });
-  $('preview-code').addEventListener('click', () => previewCrew($('crew-code').value));
-  $('confirm-code').addEventListener('click', async () => {
-    if (!crewPreview || $('confirm-code').disabled) return; $('confirm-code').disabled = true;
-    try {
-      const candidate = { ...core.createState(drawIds, { journal: state.journal, revision: state.revision + 1 }), pool: crewPreview.pool, order: [...crewPreview.order] };
-      if (!await commit(candidate, crewPreview.expected)) { tell('The crew card was not started. Reopen its preview after checking progress.'); return; }
-      draft.clear(); draftRound = null; showNextLine = false; render(); $('crew-confirm-dialog').close(); if ($('crew-dialog').open) $('crew-dialog').close(); navigate('bingo'); tell('Same squares, fresh sightings. Your crew card is ready.');
-    } finally { $('confirm-code').disabled = false; }
-  });
   $('print-button').addEventListener('click', async () => {
     $('print-button').disabled = true;
     try { await Promise.all([...$('bingo-board').querySelectorAll('img')].map(img => { img.loading = 'eager'; if (img.complete && !img.naturalWidth) img.src = img.getAttribute('src'); return img.decode(); })); window.print(); }
     catch (_) { tell('A picture could not load. Try Print card again.'); }
     finally { $('print-button').disabled = false; }
   });
-  initialize();
+  withStorageLock(initialize);
 })();

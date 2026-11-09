@@ -348,6 +348,13 @@
     "group": "Birds",
     "cue": "A fish-hunting raptor with a dark eye stripe.",
     "look": "A white head with a bold dark eye stripe, dark back, and pale underside. In flight, the long wings often bend at the wrists into a shallow M.",
+    "silhouette": {
+      "image": "assets/guides/raptors/osprey.png",
+      "wingspanCm": [150, 180],
+      "referenceSpanCm": 165,
+      "outline": "Long, narrow wings with a slight bend at the wrists.",
+      "flight": "Often glides with a shallow, M-shaped wing profile."
+    },
     "illustration": "Adult. Check the eye stripe and pale underside.",
     "source": "https://www.allaboutbirds.org/guide/Osprey/id/",
     "occurrence": [
@@ -388,6 +395,13 @@
     "group": "Birds",
     "cue": "A white head and tail on a powerful dark bird.",
     "look": "Adults have a white head and tail, dark brown body, and large yellow bill. Young eagles are mottled brown and do not yet have the familiar white head.",
+    "silhouette": {
+      "image": "assets/guides/raptors/bald-eagle.png",
+      "wingspanCm": [204, 204],
+      "referenceSpanCm": 204,
+      "outline": "Broad, plank-like wings; a large, projecting head.",
+      "flight": "Steady glides with wings held nearly level."
+    },
     "illustration": "Adult. Immature eagles look very different.",
     "source": "https://www.allaboutbirds.org/guide/Bald_Eagle/id/",
     "occurrence": [
@@ -428,6 +442,13 @@
     "group": "Birds",
     "cue": "Broad wings and an adult’s rusty-red tail.",
     "look": "A broad-winged hawk, often circling high or perched in the open. Many have a dark band across a pale belly; adults usually show a reddish tail from above.",
+    "silhouette": {
+      "image": "assets/guides/raptors/red-tailed-hawk.png",
+      "wingspanCm": [114, 133],
+      "referenceSpanCm": 123.5,
+      "outline": "Broad, rounded wings and a short, wide tail.",
+      "flight": "Circles on rising air, with the tail often fanned."
+    },
     "illustration": "Adult. Plumage varies, and juveniles have a banded brown tail.",
     "source": "https://www.allaboutbirds.org/guide/Red-tailed_Hawk/id/",
     "occurrence": [
@@ -468,6 +489,13 @@
     "group": "Birds",
     "cue": "A dark soaring bird that rocks in a shallow V.",
     "look": "Look for long wings held slightly above the body and a teetering glide. The flight feathers look pale beneath darker forewings. Adults have a small bare red head.",
+    "silhouette": {
+      "image": "assets/guides/raptors/turkey-vulture.png",
+      "wingspanCm": [170, 178],
+      "referenceSpanCm": 174,
+      "outline": "Long wings, a small head, and a long tail.",
+      "flight": "Wings raised in a shallow V; rocks side to side."
+    },
     "illustration": "Adult in flight. The red head can be hard to see at a distance.",
     "source": "https://www.allaboutbirds.org/guide/Turkey_Vulture/id/",
     "occurrence": [
@@ -989,8 +1017,9 @@
         "reviewed": "2026-11-07"
       }
     ],
-    "bingoEligible": true,
-    "cardPolicyReason": "Eligible daylight observation target; clear identification still required.",
+    "bingoEligible": false,
+    "previouslyBingoEligible": true,
+    "cardPolicyReason": "Catalog only; excluded from new rowing cards by user preference.",
     "forms": [
       {
         "id": "adult-male",
@@ -1130,8 +1159,9 @@
         "reviewed": "2026-11-07"
       }
     ],
-    "bingoEligible": true,
-    "cardPolicyReason": "Eligible daylight observation target; clear identification still required.",
+    "bingoEligible": false,
+    "previouslyBingoEligible": true,
+    "cardPolicyReason": "Catalog only; warblers excluded from new rowing cards by user preference.",
     "forms": [
       {
         "id": "adult-male",
@@ -1205,8 +1235,9 @@
         "reviewed": "2026-11-07"
       }
     ],
-    "bingoEligible": true,
-    "cardPolicyReason": "Eligible daylight observation target; clear identification still required.",
+    "bingoEligible": false,
+    "previouslyBingoEligible": true,
+    "cardPolicyReason": "Catalog only; warblers excluded from new rowing cards by user preference.",
     "forms": [
       {
         "id": "adult-male",
